@@ -1,0 +1,43 @@
+{
+  "fecha_utc": "2026-09-15T05:42:17+00:00",
+  "lote": {
+    "execution_id": "75aa891c-4e35-4ca8-84bf-7153fd3a7d48",
+    "huella_del_lote": "4ecccf2c0bdc2df7d13fbba47538da53f6905c9379d7d237e08b2af64d382110",
+    "hallazgos": 100,
+    "con_verdad_conocida": 100,
+    "vulnerabilidades_reales": 72,
+    "falsos_positivos_declarados": 28
+  },
+  "analizador": {
+    "herramienta": "Semgrep OSS",
+    "version_de_reglas": "1.177.0"
+  },
+  "consulta": {
+    "version_del_prompt": "v1+9afd750e5880c1c6+656d34e6db69c90f",
+    "temperatura": 0.0,
+    "lineas_maximas_de_contexto": 250,
+    "profundidad_de_llamadores": 2,
+    "profundidad_de_llamados": 2
+  },
+  "modelos": {
+    "anfitrion": "openrouter.ai",
+    "identificadores": [
+      "anthropic/claude-opus-5",
+      "google/gemini-3.8-flash",
+      "qwen/qwen3.8-27b"
+    ],
+    "repeticiones": 3,
+    "tope_de_consultas_por_modelo": 0,
+    "tamano_del_lote": 100
+  },
+  "entorno": {
+    "python": "3.11.2",
+    "sistema": "Windows"
+  },
+  "resultado": {
+    "acuerdo_entre_corridas": 0.7561,
+    "consultas": 817,
+    "usd": 9.6461,
+    "corridas": 9
+  }
+}

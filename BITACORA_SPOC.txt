@@ -1,0 +1,963 @@
+BITÁCORA DE LA PRUEBA DE CONCEPTO (SPOC)
+Objetivo específico 1, Anexo A
+Proyecto TP202610032 - Certa
+
+Este archivo registra lo que se hizo, en qué orden, con qué resultado y por qué
+se decidió cada cosa. Sirve para dos fines: reproducir la corrida y responder,
+meses después, por qué el procedimiento es el que es.
+
+Se anotan también los fallos y las correcciones. Un procedimiento que solo
+recoge lo que salió bien no permite justificar nada.
+
+===============================================================================
+11/09/2026 - PREPARACIÓN DEL ENTORNO
+===============================================================================
+
+[1] Dependencias de desarrollo instaladas.
+
+    venv\Scripts\python.exe -m pip install --cert C:\Users\Chizo\.certs\ca-bundle-kaspersky.pem -r requirements-dev.txt
+
+    NOTA: el parámetro --cert es obligatorio en esta máquina. La red intercepta
+    TLS y pip falla con CERTIFICATE_VERIFY_FAILED sin él. No es un problema del
+    proyecto sino del entorno, y se documenta porque reaparece en cada
+    instalación.
+
+    INCIDENCIA: semgrep no estaba declarado en ninguna parte del proyecto pese
+    a que la línea de comandos lo invoca. Se añadió a requirements-dev.txt.
+    matplotlib tampoco estaba instalado, de modo que las figuras del anexo
+    habrían fallado después de pagar la corrida.
+
+[2] Corpus de referencia obtenido.
+
+    git clone --depth 1 https://github.com/OWASP-Benchmark/BenchmarkJava corpus
+
+    Rama por omisión: master. Archivo de verdad conocida en la raíz:
+    expectedresults-1.2.csv, con 2 740 casos de prueba.
+
+    Por qué este corpus: es el único de acceso público cuya verdad se conoce
+    por construcción, condición para medir corrección funcional sin depender
+    del juicio de nadie. Su carácter sintético se declara como amenaza a la
+    validez en el Anexo B del Objetivo 1.
+
+[3] Configuración local en .env, fuera del control de versiones.
+
+    LLM_BASE_URL=https://openrouter.ai/api/v1
+    LLM_API_KEY=(no se transcribe)
+    LLM_TEMPERATURE=0.0
+    GROUND_TRUTH_PATH=...\corpus\expectedresults-1.2.csv
+    REPOSITORY_ROOT=...\certa
+
+    La temperatura fija en cero es condición declarada: sin ella la
+    estabilidad del veredicto entre repeticiones no se puede medir.
+
+[4] Ensayo de la cadena completa, sin gasto.
+
+    venv\Scripts\python.exe tools\spoc_rehearsal.py
+
+    Levanta un servidor local que habla el contrato del proveedor y corre
+    contra él la cadena entera con el código de producción. Resultado:
+    CADENA COMPLETA VERIFICADA, sin fallos.
+
+    Comprueba además que la clave del proveedor no aparezca en ninguno de los
+    archivos del paquete y que todas las consultas salgan con temperatura cero.
+
+===============================================================================
+12/09/2026 - ANÁLISIS ESTÁTICO
+===============================================================================
+
+[5] Semgrep sobre el corpus completo.
+
+    chcp 65001
+    set PYTHONIOENCODING=utf-8
+    venv\Scripts\semgrep.exe --config p/security-audit --sarif -o corpus-salida.sarif corpus
+
+    Resultado: 2 166 hallazgos, 83 reglas, 5 672 archivos, ~100% de líneas
+    analizadas. Salida: 2.2 MB, Semgrep OSS 1.177.0.
+
+    INCIDENCIA: el analizador murió la primera vez con UnicodeEncodeError al
+    imprimir un emoji en una consola cp1252. Se resolvió fijando la
+    codificación de la consola. El mismo fallo estaba latente en el adaptador
+    del proyecto, que lanzaba el analizador como subproceso sin fijarle la
+    codificación; se corrigió pasándole PYTHONIOENCODING y PYTHONUTF8.
+
+    El archivo SARIF se conserva: es la evidencia de esta corrida y lo que
+    permite repetir los pasos siguientes sin volver a analizar.
+
+[6] Línea base del analizador, sin intervención de modelos.
+
+    venv\Scripts\python.exe tools\poc_baseline.py --expected corpus\expectedresults-1.2.csv --sarif corpus-salida.sarif
+
+    CONJUNTO DE REFERENCIA
+      casos de prueba              2 740
+      vulnerabilidades reales      1 415
+      casos limpios                1 325
+
+    SALIDA DEL ANALIZADOR
+      hallazgos                    2 166
+      casos señalados              1 606
+      hallazgos sin etiqueta         450
+        otra categoría sobre un caso del conjunto   447
+        archivo ajeno al conjunto                     3
+
+    MATRIZ DE CONFUSIÓN POR CASO DE PRUEBA
+      verdaderos positivos         1 094
+      falsos positivos               512
+      verdaderos negativos           813
+      falsos negativos               321
+      exactitud                    0.6960
+      precisión                    0.6812
+      exhaustividad                0.7731
+      F1                           0.7243
+      tasa de falsos positivos     0.3864
+
+    LECTURA: F1 = 0.7243 es la línea base contra la que compite la herramienta.
+    El criterio declarado en el protocolo es F1 no menor a 0.75 y superior a
+    esta cifra.
+
+    Los 512 falsos positivos son el material de trabajo: sobre ellos se mide si
+    la herramienta descarta sin perder ninguno de los 1 094 reales detectados.
+
+    El recuento va por caso de prueba y no por hallazgo. El conjunto afirma una
+    cosa de cada archivo; contar hallazgos premiaría a la herramienta más
+    ruidosa.
+
+    Los 447 hallazgos de otra categoría sobre un caso del conjunto quedan sin
+    etiqueta a propósito: el corpus no afirma nada sobre ellos, y darlos por
+    falsos positivos inflaría de manera artificial la exactitud medida.
+
+[7] Ingesta y etiquetado contra verdad conocida.
+
+    venv\Scripts\python.exe -m src.cli analyze corpus --sarif corpus-salida.sarif --project "OWASP Benchmark"
+
+    Resultado: 2 166 hallazgos ingeridos, 1 716 con verdad conocida.
+
+    Reparto por categoría de los etiquetados:
+      CWE-89  (inyección SQL)            238 reales   150 falsos
+      CWE-79  (secuencias entre sitios)  202 reales   108 falsos
+      CWE-22  (recorrido de rutas)       152 reales   136 falsos
+      CWE-78  (inyección de comandos)    121 reales   100 falsos
+      CWE-330 (aleatoriedad débil)       218 reales     0 falsos
+      CWE-328 (resumen débil)            113 reales     0 falsos
+      CWE-501 (frontera de confianza)     43 reales    18 falsos
+      CWE-90  (inyección LDAP)            26 reales    28 falsos
+      CWE-614 (cookie insegura)           36 reales     0 falsos
+      CWE-643 (inyección XPath)           14 reales    13 falsos
+
+    OBSERVACIÓN: tres categorías no aportan ningún falso positivo, de modo que
+    no pueden contribuir a medir el descarte. Se conservan en la muestra porque
+    sí contribuyen a medir que la herramienta no suprima verdaderos positivos,
+    que es la otra mitad del criterio.
+
+===============================================================================
+INCIDENCIAS CORREGIDAS ANTES DE GASTAR
+===============================================================================
+
+Las tres se detectaron ejecutando los pasos gratuitos y la prueba de humo. Si
+no se hubieran corregido, la corrida pagada habría producido resultados
+inválidos o nulos.
+
+[A] El muestreo no era estratificado.
+
+    El documento del Objetivo 1 declara que "los casos se estratifican por
+    categoría CWE y se extrae una muestra de 100 hallazgos", pero el código
+    cortaba los primeros N en el orden en que la base los devolvía. Como los
+    hallazgos llegan agrupados por ruta de archivo y las rutas agrupan por
+    categoría, la muestra habría cubierto una o dos categorías.
+
+    Corrección: reparto proporcional entre categorías, con un mínimo de uno por
+    categoría y barajado con semilla fija. La semilla se registra en el
+    manifiesto, condición para repetir la corrida y obtener el mismo lote.
+
+[B] Las rutas del SARIF no resolvían.
+
+    El analizador se invocó con un destino relativo, de modo que la salida
+    arrastraba el prefijo "..\..\corpus\". Al unirlo con la raíz del
+    repositorio, la ruta se salía de ella: el recuperador de contexto no
+    encontraba el archivo, no había nada que enviar al modelo y la corrida
+    terminaba con cero consultas y cero coste sin explicar por qué.
+
+    Se detectó en la prueba de humo, que devolvió F1 = 0.000 y USD 0.0000.
+
+    Corrección: el parser normaliza la ruta descartando los segmentos de
+    subida. Se ajustó REPOSITORY_ROOT en consecuencia.
+
+[C] El analizador moría por la codificación de la consola.
+
+    Descrito en el paso [5].
+
+[D] La conexión con el proveedor fallaba por intercepción TLS.
+
+    La primera prueba de humo con la clave real terminó en
+    ProviderUnavailable tras agotar los cuatro intentos previstos, sin gasto.
+
+    Diagnóstico: la red de esta máquina intercepta TLS y firma las conexiones
+    con una autoridad propia. El cliente HTTP valida contra el almacén de
+    certifi, que no la incluye, de modo que toda llamada al proveedor moría con
+    CERTIFICATE_VERIFY_FAILED. Se comprobó lanzando la misma petición con y sin
+    el paquete de certificados: sin él, error de verificación; con él, HTTP 200.
+
+    El reintento tomaba el fallo por transitorio y agotaba los intentos sin
+    informar de la causa real.
+
+    Corrección: el adaptador admite un paquete de certificados propio,
+    declarado como SSL_CERT_FILE en la configuración del proyecto y no como
+    variable de entorno suelta, para que la corrida no dependa de cómo se
+    lanzó la consola.
+
+    OBSERVACIÓN METODOLÓGICA: este fallo no lo podía detectar el ensayo previo,
+    porque aquel levanta un servidor local sin cifrado. Es la razón de que la
+    prueba de humo con la clave real, y con un lote mínimo, sea un paso
+    separado del procedimiento y no un trámite.
+
+[E] Una llamada fallida se llevaba el lote entero.
+
+    Tres fallos encadenados, detectados con lotes de dos a cuatro hallazgos.
+
+    E.1 Cuando el proveedor devuelve contenido nulo, el parser llamaba a
+        .strip() sobre un valor inexistente y el programa caía. No era un
+        contrato incumplido ni un fallo transitorio, sino una caída, y se
+        llevaba por delante todo lo ya validado y pagado.
+
+    E.2 Una respuesta vacía y un JSON malformado se trataban igual, y no lo
+        son. Un modelo que devuelve JSON malformado seguirá haciéndolo, de
+        modo que reintentar solo gasta; una respuesta vacía viene de un fallo
+        del proveedor en esa llamada concreta y la siguiente suele resolverla.
+        Se separaron, y la vacía pasa a tratarse como transitoria.
+
+    E.3 Agotar los reintentos de un hallazgo abortaba la comparación completa.
+        En una corrida de novecientas consultas, fallar en la mitad habría
+        significado perder todo lo pagado hasta ese punto. Ahora el hallazgo se
+        cuenta como fallo, queda registrado en el cuadro de resultados y el
+        lote continúa.
+
+[F] Guardar un veredicto no era repetible.
+
+    La clave única de hallazgo, modelo, versión y repetición impedía reescribir
+    una corrida interrumpida: repetirla chocaba contra lo ya escrito y no había
+    manera de terminarla sin borrar a mano. Ahora reemplaza, de modo que vale
+    el último veredicto obtenido con esos parámetros.
+
+===============================================================================
+DIAGNÓSTICO DEL PROVEEDOR
+===============================================================================
+
+Durante las pruebas, un modelo devolvió cuatro veces seguidas contenido vacío
+con el motivo "error" declarado por el proveedor. Se comprobó de manera
+sistemática si la causa estaba en la petición, contrastando las combinaciones
+de consulta corta y larga con y sin formato de respuesta forzado, sobre los
+tres finalistas:
+
+    consulta corta, sin formato forzado    los tres responden
+    consulta corta, con formato forzado    los tres responden
+    consulta real,  sin formato forzado    responde
+    consulta real,  con formato forzado    responde
+
+Ninguna combinación reproduce el fallo, de modo que no está en la petición: era
+una indisponibilidad momentánea del proveedor al que la pasarela enrutó esa
+llamada. El comportamiento correcto ante eso es reintentar y, si persiste,
+contar el hallazgo como fallo y seguir, que es lo que se implementó en [E].
+
+Se deja constancia porque es previsible que vuelva a ocurrir durante la corrida
+definitiva, y porque el número de fallos por modelo es un dato de la medición:
+un proveedor que falla a menudo es peor candidato aunque acierte igual.
+
+===============================================================================
+PENDIENTE
+===============================================================================
+
+[9] Corrida del SPOC: tres finalistas, 100 hallazgos, 3 repeticiones.
+[10] Figuras del Anexo A.
+
+===============================================================================
+REVISIÓN DEL 14 DE SETIEMBRE DE 2026, ANTES DE LA CORRIDA DEFINITIVA
+===============================================================================
+
+La corrida lanzada la noche anterior se interrumpió sola. Al revisar por qué,
+la revisión encontró cuatro defectos que invalidaban la medición. Se documentan
+porque explican por qué la corrida definitiva se retrasó y por qué los
+veredictos obtenidos hasta esa fecha no se reutilizaron.
+
+[G] La muestra que se anunciaba no era la que se consultaba.
+
+    El programa elegía una muestra estratificada por categoría, la imprimía y
+    la usaba para las etiquetas del cuadro de resultados. Pero al servicio de
+    comparación le pasaba el lote vacío, y el servicio, al recibirlo vacío,
+    volvía a leer de la base los 2 166 hallazgos de la ejecución y consultaba
+    desde el primero.
+
+    Consecuencia: se consultaba un conjunto y se informaba otro. De los
+    veredictos pagados hasta entonces, solo 6 de Qwen, 6 de Gemini y 21 de Opus
+    caían dentro de la muestra que el documento describe.
+
+    El reparto por categoría de lo consultado resultó parecido al de la muestra
+    prevista, porque el conjunto de referencia numera los archivos de prueba
+    intercalando las categorías. Eso atenúa el daño pero no lo repara: lo
+    ejecutado seguía siendo un corte por orden de archivo, no el muestreo
+    aleatorio estratificado con semilla que el procedimiento declara.
+
+    Corrección: el lote elegido se le pasa al servicio y el servicio no vuelve
+    a leer por su cuenta. Queda una prueba que falla si alguien lo deshace.
+
+[H] El contexto no llegaba hasta donde vive el saneamiento.
+
+    Más de la mitad de los veredictos salían "indeterminado": 51% en Opus, 59%
+    en Gemini y 59% en Qwen. Al leer las justificaciones, todas decían lo mismo
+    y decían bien: se ve de dónde viene el dato y dónde acaba, pero entre medio
+    hay una llamada a un método auxiliar cuyo cuerpo no se envió, y sin verlo no
+    se puede afirmar si el dato se saneó.
+
+    El recuperador de contexto traía el método que contiene la línea señalada y
+    sus llamadores, nunca los métodos a los que ese método delega. En el
+    conjunto de referencia el saneamiento está siempre en el auxiliar al que se
+    delega, declarado en el mismo archivo unas líneas más abajo.
+
+    Corrección: se recuperan también los métodos llamados, hasta dos eslabones
+    de delegación, acotado por el tope de líneas del contexto. Sobre la muestra
+    de 100, 75 pasan a incluir el cuerpo del auxiliar. El contexto crece de unos
+    563 a unos 677 tokens por consulta, un 20% más de costo de entrada.
+
+[I] Abstenerse se contaba como negar.
+
+    El cuadro de resultados tomaba "indeterminado" como "no explotable". Eso le
+    atribuye al modelo una afirmación que no hizo, infla los falsos negativos y
+    castiga al modelo prudente frente a uno que responda al azar.
+
+    Con los datos de Opus ya obtenidos, la diferencia entre una lectura y otra:
+
+        abstención contada como negación   precisión 0,929  exh 0,502  F1 0,652
+        medido sobre lo que sí resolvió    precisión 0,929  exh 0,963  F1 0,945
+
+    La primera lectura situaba al modelo por debajo del analizador solo
+    (F1 = 0,7243) y habría llevado a concluir lo contrario de lo que los datos
+    dicen.
+
+    Corrección: la matriz se calcula sobre los veredictos en que el modelo se
+    pronuncia, y la fila declara además cuántos dejó sin resolver y qué
+    proporción del lote es esa. Las dos cifras van juntas en el cuadro: la
+    precisión sobre lo resuelto, leída sola, premiaría al modelo que solo se
+    pronuncia sobre lo fácil.
+
+[J] Defectos menores corregidos en la misma revisión.
+
+    - Alcanzar el tope de consultas de un modelo dejaba la corrida recorriendo
+      el lote sin consultar nada y sin decirlo. Ahora cierra esa corrida, lo
+      anota en el cuadro y sigue con el resto de modelos.
+    - El detalle por veredicto volcaba también los veredictos de corridas
+      anteriores sobre hallazgos ajenos al lote. Ahora se limita al lote.
+    - El recorrido de respaldo por expresiones regulares tomaba "if", "for" y
+      "switch" por declaraciones de método, y tardaba 2,5 segundos por archivo
+      de 114 líneas por retroceso del patrón. No afectaba a la corrida, que usa
+      el recorrido por árbol sintáctico, pero quedaba como trampa para el día
+      que falte la gramática.
+
+DECISIÓN SOBRE LOS VEREDICTOS YA PAGADOS
+
+Los 35 veredictos que caían dentro de la muestra se obtuvieron con el contexto
+anterior, sin el cuerpo del método llamado. Mezclarlos con los nuevos sería
+informar como una sola medición dos condiciones distintas, de modo que se
+descartaron y la muestra se vuelve a medir entera. Los 683 veredictos de
+hallazgos fuera de la muestra se conservan como evidencia del análisis que
+llevó a detectar [H].
+
+ENSAYO PAGADO ANTES DE LA CORRIDA DEFINITIVA
+
+Para no comprometer el presupuesto entero sobre una corrección sin comprobar,
+se pagó primero un ensayo de 12 hallazgos con el modelo caro y otros tantos con
+uno barato. Resultado del modelo caro sobre el contexto nuevo:
+
+    se pronuncia         10 de 12   (antes se pronunciaba en el 49%)
+    aciertos             10 de 10
+    abstenciones          2 de 12
+    anclaje a la primera 17 de 17 sobre los dos modelos
+
+El costo por consulta bajó de 0,0273 a 0,0243 dólares pese a enviar un 20% más
+de contexto: la respuesta pasó de 746 a 610 tokens de salida, porque decidir
+ocupa menos palabras que explicar por qué no se puede decidir.
+
+Los veredictos del ensayo forman parte de la muestra y se reutilizan en la
+corrida definitiva, de modo que no son gasto perdido.
+
+DOS IMPRECISIONES QUE SE DEJARON COMO ESTABAN
+
+Se detectaron dos en el texto de la consulta y se decidió no tocarlas antes de
+la corrida definitiva. Se dejan anotadas por transparencia.
+
+    La consulta anuncia "Líneas disponibles" como un rango continuo, del primer
+    número al último. Desde que el contexto trae también el método llamado, las
+    líneas van en dos bloques con un hueco entre medio, de modo que el rango
+    anunciado incluye líneas que no se enviaron. Citar una de ellas invalidaría
+    la respuesta según la regla 3 de la propia consulta.
+
+    La consulta enumera los llamadores incluidos pero no los métodos llamados,
+    aunque sus cuerpos ya viajan en el código.
+
+No se corrigieron porque los datos del ensayo dicen que no están causando daño:
+17 de 17 veredictos anclaron a la primera, y las líneas citadas caen en los dos
+bloques reales, no en el hueco. Cambiar el texto de la consulta habría obligado
+a repetir el ensayo, y habría dejado la corrida de once dólares apoyada en una
+consulta sin ensayar, que es el riesgo mayor de los dos.
+
+===============================================================================
+REVISIÓN DEL RECORRIDO DE CÓDIGO, CON LA CORRIDA YA EN MARCHA
+===============================================================================
+
+Se contrastó el recorrido de respaldo por expresiones regulares contra el de
+árbol sintáctico sobre 421 archivos del conjunto de referencia. El de árbol usa
+la gramática real de Java y sirve de juez: el de respaldo solo entra si esa
+gramática falta, pero cuando entre tiene que decir lo mismo, porque si no el
+contexto que recibe el modelo dependería de qué paquetes haya instalados.
+
+Partían de 4 archivos coincidentes de 421. Terminaron en 410.
+
+[K] El patrón tardaba 216 segundos por archivo.
+
+    Los modificadores y el tipo de retorno se buscaban a lo largo de varias
+    líneas, con el espacio en blanco dentro de una clase repetida. Al fallar la
+    firma, el motor reprobaba cada reparto posible de ese espacio a lo largo del
+    archivo entero. Acotado a la línea del nombre: menos de un milisegundo.
+
+    No afectaba a la corrida, que usa el recorrido por árbol.
+
+[L] Los genéricos anidados dejaban métodos fuera.
+
+    Una firma como ResponseEntity<List<Mensaje>> no entraba, y con ella se
+    perdían los tres métodos de un archivo auxiliar.
+
+[M] Una URL dentro de una cadena rompía el enmascarado.
+
+    Antes de contar llaves se sustituyen cadenas y comentarios por espacios. Se
+    hacía en cuatro pasadas encadenadas, y la de comentarios iba antes que la de
+    cadenas: la barra doble de "ldap://servidor" se tomaba por comentario, se
+    borraba el resto de la línea con la comilla de cierre incluida, y desde ahí
+    las comillas se emparejaban con las de otras líneas enmascarando código de
+    verdad, llaves incluidas. En un archivo auxiliar real, un método pasaba a
+    abarcar de la línea 57 a la 133 y se tragaba a los dos siguientes.
+
+    Corregido con un solo recorrido de una pasada, donde gana el literal que
+    empiece antes, que es la regla del lenguaje.
+
+[N] PENDIENTE, NO CORREGIDO TODAVÍA: el árbol sintáctico puede nombrar mal al
+    método contenedor.
+
+    Al emparejar cada método con su nombre se toma el primero de la lista de
+    capturas, y esa lista no viene en orden de documento. En un método que
+    contiene una clase anónima con métodos propios, el nombre del método de
+    dentro puede acabar asignado al de fuera. Se observó en BenchmarkTest00197,
+    donde doPost aparece nombrado mapRow.
+
+    El texto del contexto no se ve afectado, porque el rango de bytes sí es el
+    correcto: el modelo recibe el código que toca. Lo que sale mal es la
+    etiqueta "Función contenedora" de la consulta, y la búsqueda de llamadores y
+    llamados, que se hace por nombre.
+
+    Sobre la muestra de 100 hallazgos afecta a 1: BenchmarkTest02357.
+
+    NO se corrigió en el momento de detectarlo, con la corrida ya en marcha.
+    Cambiar el recuperador de contexto a mitad de una medición mezcla dos
+    condiciones bajo un solo resultado, que es exactamente el motivo por el que
+    esta misma mañana se descartaron 35 veredictos. Se corrige al terminar, y el
+    resultado del objetivo 1 se informa tal como lo produjo el código vigente
+    durante la corrida, con esta salvedad declarada.
+
+[Ñ] PENDIENTE: la consulta del árbol no captura constructores.
+
+    Captura method_declaration, y un constructor es constructor_declaration. Si
+    el dato pasa por un constructor, su cuerpo no se recupera. No afecta al
+    conjunto de referencia, donde el auxiliar es siempre un método corriente,
+    pero sí a cualquier proyecto real. Mismo motivo para no tocarlo ahora.
+
+===============================================================================
+CORTE POR LÍMITE DE LA CLAVE, 14 DE SETIEMBRE, NOCHE
+===============================================================================
+
+La corrida terminó sola con Opus casi sin datos. La causa no fue el saldo.
+
+    límite de gasto de la clave   25.00
+    consumido por la clave        24.9991
+    disponible en la clave         0.0009   <- lo que la frenó
+    saldo de la cuenta            10.00     <- intacto
+
+El proveedor rechazaba cada consulta con 402 "requires more credits, can only
+afford 34 tokens" mientras la cuenta tenía diez dólares sin tocar. La clave
+llevaba encima un tope propio de gasto, distinto del saldo, y era ese el que se
+había agotado.
+
+[O] El vigilante miraba el número equivocado.
+
+    Consultaba /credits, que informa el saldo de la cuenta, y lo veía quieto en
+    10,00. Informó normalidad durante toda la parte de la corrida en que ninguna
+    consulta se estaba atendiendo. Son dos topes distintos y manda el menor.
+
+    Corregido: ahora consulta también /key y toma el mínimo entre lo que queda
+    en la cuenta y lo que la clave puede gastar todavía. Si el proveedor no
+    expone el dato de la clave, sigue con el saldo en lugar de quedarse mudo.
+
+[P] La columna de costo del cuadro no servía para comparar modelos.
+
+    El guardia de presupuesto del dominio lleva un solo par de precios, que le
+    basta para cortar una corrida desbocada. El cuadro de resultados usaba esa
+    misma cifra para los tres modelos, de modo que aplicaba la tarifa del más
+    caro a todos.
+
+    Medido sobre los veredictos ya obtenidos:
+
+        modelo                    nominal    real
+        qwen, por repetición         2,58    0,40
+        gemini, por repetición       1,47    0,42
+        opus, lo que alcanzó         0,00    0,29
+
+    Con la cifra nominal Qwen parecía costar casi el doble que Gemini. En
+    realidad cuestan lo mismo, y lo que separa a Qwen es que tarda el doble y
+    falla donde el otro no. El costo es uno de los criterios de elección del
+    objetivo 1, de modo que la cifra inflada podía invertir la decisión.
+
+    Corregido: el costo se calcula con la tarifa que el proveedor publica para
+    cada modelo, sobre los tokens realmente guardados de cada corrida. Si el
+    catálogo no responde, se avisa y se deja constancia en lugar de informar una
+    cifra inventada.
+
+ESTADO AL RELANZAR
+
+    qwen     rep 1  89/100   rep 2  88/100   rep 3  87/100
+    gemini   rep 1  85/100   rep 2  75/100   rep 3   0/100
+    opus     rep 1  12/100   rep 2   0/100   rep 3   0/100
+
+Los huecos de Qwen no son de dinero: son sus 84 truncamientos y sus respuestas
+sin JSON, que son un dato del benchmarking y no un estorbo.
+
+Se relanzó con Opus primero y Qwen último. Con reanudación el orden no cambia el
+gasto, pero decide qué queda completo si algo vuelve a interrumpir: Opus es el
+que no tiene datos y el que más cuesta, y Qwen ya está entero.
+
+===============================================================================
+CIERRE: RESULTADO, CORRECCIONES PENDIENTES Y DOCUMENTO
+===============================================================================
+
+CAÍDA FINAL Y RECUPERACIÓN
+
+La corrida relanzada terminó por una excepción no prevista: un modelo devolvió
+el veredicto envuelto en un arreglo JSON donde el contrato pide un objeto, y el
+lector asumía diccionario. La excepción no estaba entre las tres que el bucle
+atrapaba y se llevó por delante la comparación entera, ya con siete dólares y
+medio de consultas hechas.
+
+No se perdió nada medido: cada veredicto se guarda en cuanto se obtiene. Se
+reconstruyó el cuadro desde la base sin consultar al proveedor.
+
+[Q] El bucle solo atrapaba las excepciones previstas.
+
+    Las previstas son las que ya se conocen. Las que cuestan corridas enteras
+    son las otras, y la lista de formas en que un proveedor ajeno puede
+    contestar algo inesperado no se cierra de antemano. Ahora se atrapa
+    cualquier excepción por hallazgo: se cuenta como fallo, queda en el cuadro y
+    el lote sigue.
+
+[R] El lector acepta el arreglo de un elemento y rechaza el resto como
+    incumplimiento contado, no como caída.
+
+    Se añadió tools/rebuild_scorecard.py, que rearma cuadro, detalle y
+    manifiesto desde los veredictos guardados.
+
+CORRECCIONES QUE ESTABAN PENDIENTES, YA APLICADAS
+
+[N] El árbol sintáctico nombraba mal al método contenedor. Se pedía el nombre
+    entre las capturas por rango de bytes, y esas capturas no vienen en orden de
+    documento. Ahora se pide como campo del nodo, que es lo que dice la
+    gramática. Comprobado sobre BenchmarkTest00197: doPost ya es doPost.
+
+[Ñ] La consulta no capturaba constructores. Ahora sí, y también la creación de
+    objetos como invocación, de modo que el saneamiento que vive en un
+    constructor llega al contexto.
+
+    Efecto sobre la muestra ya medida: ninguno. El contexto de los 100 hallazgos
+    es idéntico antes y después, 75 con cuerpo del método llamado y 59 líneas de
+    media. Solo cambia la etiqueta del método contenedor en 1 hallazgo. Los
+    resultados informados no quedan afectados por estas correcciones.
+
+    Contraste entre los dos recorridos sobre 421 archivos: coincidían 4 al
+    empezar la revisión y coinciden 420 al cerrarla. El único distinto es un
+    método de interfaz sin cuerpo, que el de respaldo omite con razón.
+
+RESULTADO DE LA PRUEBA DE CONCEPTO
+
+    finalista                  F1     prec    exh    cob   estab  latencia  USD/100
+    anthropic/claude-opus-5   0.973  0.962  0.983  0.949  0.946    9.9 s     2.33
+    qwen/qwen3.8-27b          0.969  0.946  0.994  0.856  0.874   24.7 s     0.43
+    google/gemini-3.8-flash   0.953  0.969  0.939  0.885  0.931   20.0 s     0.45
+    analizador sin asistencia 0.821  0.696  1.000  1.000  1.000      n/a     0.00
+
+Muestra medida: 92 hallazgos con veredicto de los tres, 64 reales y 28 falsos
+positivos. Los 8 restantes de los 100 se perdieron por fallos del proveedor.
+
+Anclaje verificado a la primera: 1.000 en dos finalistas y 0.996 en el tercero,
+frente al umbral de 0.85. Ninguna clase de veredicto superó el 67 por ciento,
+por debajo del 90 declarado como umbral de respuesta degenerada.
+
+La segunda línea base prevista en A.1, el analizador con reglas ajustadas por un
+especialista, NO se ejecutó y queda pendiente. Está declarado así en el anexo.
+
+DECISIÓN
+
+Se selecciona anthropic/claude-opus-5. Encabeza F1, cobertura, estabilidad y
+latencia. Su costo es cinco veces el de las otras dos, y esa es su única
+desventaja. Se documenta google/gemini-3.8-flash como alternativa económica
+validada, que cumple los tres umbrales del Project Charter a la quinta parte del
+costo: la propuesta no queda atada al modelo más caro del mercado.
+
+INCORPORACIÓN AL DOCUMENTO
+
+En TP202610032_Objetivo 1 - Benchmarking v1.0.docx:
+  6.2, decisión y fundamentación reescrita, con la Tabla 6 de resultados.
+  7, fila de la capa de modelo y justificación del razonamiento alineadas.
+  Anexo A.2, resultados de la corrida y las cinco figuras con su epígrafe.
+
+Word renumera los campos de tabla y figura al abrir o imprimir. Los valores
+guardados se dejaron ya correctos para que se lea bien también antes de eso.
+
+===============================================================================
+BLINDAJE DEL OBJETIVO 1 ANTE LA REVISIÓN DEL JURADO
+===============================================================================
+
+Se sometió el resultado a las preguntas que un jurado haría. Dos encontraron
+defensas insuficientes y obligaron a rehacer la fundamentación.
+
+[S] La decisión se apoyaba en una diferencia que no resiste contraste.
+
+    El documento sostenía la elección de anthropic/claude-opus-5 en que
+    "encabeza la puntuación F1". Sobre los 92 hallazgos que los tres finalistas
+    resolvieron, la prueba de McNemar no detecta diferencia entre ninguna
+    pareja:
+
+        opus frente a qwen      0 discordantes        p = 1.000
+        opus frente a gemini    2 a favor de opus     p = 0.500
+        gemini frente a qwen    2 a favor de qwen     p = 0.500
+
+    Los intervalos de confianza de la F1, estimados por remuestreo con 5 000
+    réplicas, se solapan por completo: qwen [0.951, 1.000], opus [0.943, 1.000],
+    gemini [0.909, 0.990]. Con 92 casos la amplitud del intervalo se come todas
+    las diferencias observadas.
+
+    En exactitud los tres modelos son indistinguibles, y afirmar lo contrario
+    habría caído al primer examen.
+
+    Lo que sí resulta significativo es la cobertura:
+
+        resueltos de 92     opus 88     gemini 81     qwen 79
+        opus frente a qwen      9 a 0    p = 0.004
+        opus frente a gemini    7 a 0    p = 0.016
+
+    Y la asimetría del error. De los 28 falsos positivos los tres retiran entre
+    24 y 25, diferencia irrelevante; pero gemini declara no explotables 3
+    vulnerabilidades reales, frente a 1 de opus y ninguna de qwen.
+
+    La fundamentación se rehizo sobre cobertura, error asimétrico y costo por
+    revisión evitada. La elección no cambia; el argumento sí, y ahora es el que
+    los datos sostienen.
+
+[T] La defensa del costo estaba planteada donde se pierde.
+
+    Comparar 2.33 contra 0.45 dólares deja al modelo caro sin defensa. La
+    comparación pertinente es contra el trabajo que sustituye: por cada 100
+    hallazgos, opus retira unos 27 falsos positivos a 0.086 dólares cada uno, y
+    su sobreprecio de 1.88 dólares compra unos 8 pronunciamientos adicionales, a
+    unos 0.25 dólares por revisión manual evitada.
+
+    PENDIENTE: hace falta una fuente citable del costo hora de un ingeniero de
+    seguridad en el Perú. Sin ella el argumento es aritmética sin anclaje.
+
+[U] Los ocho hallazgos perdidos no se perdieron al azar.
+
+    Los ocho eran vulnerabilidades reales y ninguno era falso positivo. Si la
+    pérdida fuera indiferente al contenido se esperarían 5.8, y la probabilidad
+    de observar los ocho por azar es 0.064. El mecanismo es coherente: el caso
+    con vulnerabilidad real tiene flujo que seguir, el modelo razona más largo y
+    agota con mayor frecuencia el presupuesto de salida.
+
+    Consecuencia declarada en el anexo: la exhaustividad quedó medida sobre un
+    subconjunto más fácil, de modo que las cifras son un límite superior.
+
+[V] Faltaba el apartado de amenazas a la validez.
+
+    Se agregó A.4 con las cuatro categorías de Wohlin et al. (2012). La más
+    seria es la externa: el conjunto de referencia es código generado y todos
+    sus casos comparten la misma forma, un receptor que delega en un auxiliar
+    del mismo archivo, que es justo lo que la herramienta sabe recuperar. Las
+    cifras se declaran como límite superior sobre código regular y no como
+    previsión de campo, que corresponde al cuarto objetivo.
+
+===============================================================================
+CORRECCIONES DERIVADAS DE LA REVISIÓN ADVERSARIAL, 15 DE SETIEMBRE
+===============================================================================
+
+[W] El campo de métodos llamados no se persistía.
+
+    Se añadió a la entidad de contexto durante la corrección del recuperador,
+    pero no al modelo de datos ni a la conversión del repositorio: se guardaba
+    vacío y se recuperaba vacío. Un veredicto antiguo no habría podido auditarse
+    contra el contexto con que se emitió.
+
+    Corregido: columnas callees y callee_depth, guardado y lectura, con prueba
+    de ida y vuelta. El contexto degradado declara profundidad cero, porque en
+    ese camino no se recupera ningún método llamado.
+
+OBJETIVO 2, ARQUITECTURA
+
+  El recuperador de contexto se describía como si solo buscara llamadores. Se
+  documentó el recorrido hacia los métodos llamados y su efecto medido: la
+  cobertura del modelo subió del 49 al 95 por ciento al incorporarlo. El modelo
+  de datos de code_contexts recoge ahora ese campo y las dos profundidades.
+
+  La interoperabilidad se acotó a lo verificado. Se afirmaba interoperar con
+  cualquier analizador que emitiera SARIF, habiéndolo probado con uno, y en ese
+  uno aparecieron dos variaciones que la norma deja libres: dónde se declara la
+  categoría y cómo se expresa la ruta. Ambas quedan documentadas en el adaptador.
+
+  Se declaró la tensión entre los dos perfiles de despliegue. El perfil B existe
+  para que el código no salga de la organización, y el único régimen que lo
+  permite es el de pesos abiertos, que la prueba de concepto dejó último en
+  cobertura. Además se midió consumido por interfaz de programación y no
+  desplegado, de modo que su desempeño bajo infraestructura propia no está
+  medido. Presentar los dos perfiles como equivalentes habría sido falso.
+
+OBJETIVO 4, PROTOCOLO
+
+  Se añadió la medición de confianza ciega, que era el hueco de fondo. La
+  exactitud del participante puede subir porque juzga mejor o porque deja de
+  juzgar y obedece a una herramienta que acierta casi siempre; ambas producen el
+  mismo valor y solo la primera sostiene el trabajo. El lote asistido incluye
+  ahora veredictos incorrectos, tomados de los errores reales del modelo sobre
+  el conjunto de referencia, y se mide en qué proporción el participante los
+  rectifica. Criterio declarado: no más del 50 por ciento de seguimiento.
+
+  El lote pasó de ocho a doce hallazgos por condición. Con ocho, la exactitud
+  solo tomaba nueve valores y cerca del veinte por ciento de los pares quedaba
+  empatado; la prueba de rangos con signo los descarta. Con doce, la pérdida
+  baja al quince por ciento. La sensibilidad efectiva, próxima a 0.70, se
+  declara junto a la nominal de 0.64, que era la que el documento informaba sin
+  descontar los empates.
+
+  La sesión pasó de cuarenta y cinco a sesenta minutos y sus bloques suman
+  exactamente ese total, conservando el tiempo por hallazgo que el documento ya
+  suponía.
+
+  Se declararon dos amenazas que faltaban: la presión del reloj sobre la
+  condición sin asistencia, que el piloto debe dimensionar antes de la primera
+  sesión; y la confusión entre mejor juicio y obediencia.
+
+OBJETIVO 1, COSTO
+
+  El argumento económico quedó anclado en fuentes citables. El MTPE publica, a
+  partir de la Planilla Electrónica, un ingreso mensual promedio de S/ 8 752
+  para Ingeniería de Sistemas y Cómputo de treinta años a más en Lima
+  Metropolitana; el BCRP publica el tipo de cambio de S/ 3.364 por dólar en
+  agosto del 2026.
+
+      analista                   S/ 49.73 por hora = S/ 0.83 por minuto
+      opus, 100 hallazgos        S/ 7.84, retira 27 falsos positivos
+      costo por falso positivo   S/ 0.29
+      punto de equilibrio        21 segundos de trabajo del analista
+      sobreprecio vs la barata   S/ 0.83 por revisión evitada = 1 minuto
+
+  El cálculo emplea la remuneración bruta y no el costo total para el empleador,
+  de modo que subestima el ahorro, que es el sentido en que conviene equivocarse
+  al justificar un gasto.
+
+PENDIENTE DE FORMA
+
+  Las referencias del objetivo 1 no llevan cursivas en los títulos. Las dos
+  nuevas sí, por corrección APA, y eso deja el listado disperso. Conviene
+  normalizar las quince restantes.
+
+===============================================================================
+CIERRE DE FORMA Y AUDITORÍA DEL OBJETIVO 3
+===============================================================================
+
+REFERENCIAS DEL OBJETIVO 1
+
+Las diecinueve entradas llevan ya las cursivas que pide APA 7, que no son las
+mismas en todos los casos: en una página o informe institucional va en cursiva
+el título y no el sitio; en una ponencia va redondo el título del trabajo y en
+cursiva el nombre de las actas; en un artículo de revista van en cursiva el
+nombre de la revista y el volumen, pero no el número entre paréntesis; en un
+preprint va en cursiva el título y redondo el repositorio.
+
+[X] El esquema cambió sin migración.
+
+    Al persistir los métodos llamados se añadieron dos columnas al modelo, pero
+    no a las migraciones. El servicio desplegado corre alembic upgrade head al
+    construir, de modo que la base en producción habría quedado sin esas
+    columnas mientras el código ya las esperaba: el primer intento de guardar un
+    contexto habría fallado.
+
+    Corregido con la revisión 4b2e91a7c3d8. Las columnas admiten valor por
+    omisión para que las filas anteriores sigan siendo legibles y declaren lo
+    que de verdad fueron: contextos recuperados sin ese recorrido.
+
+    Comprobado que el esquema que producen las migraciones coincide, tabla por
+    tabla y columna por columna, con el que declara el modelo.
+
+ESTADO DEL OBJETIVO 3
+
+    historias de usuario           44, todas marcadas como terminadas
+    reparto por sprint             11, 13, 12 y 8
+    servicio de interfaz           https://certa-backend-api.onrender.com  responde 200
+    cliente web                    https://certa-upc.netlify.app  responde 200
+
+El indicador OE3-I1 exige el acta de aprobación del asesor sobre el cumplimiento
+de las historias y sus criterios de aceptación, con la herramienta desplegada y
+accesible desde el navegador. Las dos condiciones técnicas se cumplen. Lo que
+resta del objetivo no es desarrollo sino la aprobación misma.
+
+===============================================================================
+ARQUITECTURA: LO QUE LA CORRIDA OBLIGÓ A RECONOCER
+===============================================================================
+
+Tres decisiones que el documento no recogía y una propiedad que figuraba como
+detalle de implementación. Las cuatro salieron de correr el sistema, no de
+revisarlo sobre el papel.
+
+[Y] El guarda de presupuesto cuenta consultas y el problema era el dinero.
+
+    El documento justificaba la decisión diciendo que la consulta es lo que el
+    sistema controla y el precio lo mueve el proveedor. Resultó insuficiente: el
+    costo por consulta varía en un factor de cinco entre los modelos comparados,
+    y el cuadro llegó a informar 10.82 dólares donde se habían gastado 2.33.
+
+    Queda declarado que el guarda es red de seguridad contra una configuración
+    desbocada y no instrumento de costo, y que la valorización se resuelve fuera
+    del dominio, contra la tarifa publicada y sobre los tokens consumidos.
+
+[Z] No existía la noción de fiabilidad del proveedor.
+
+    Respuestas truncadas, vacías, con JSON mal formado, un arreglo donde el
+    contrato pide un objeto, y rechazos por crédito insuficiente. Cada una se
+    resolvió donde apareció, dentro del adaptador, sin que la arquitectura
+    nombrara la preocupación. Y no es operativa solamente: 84 truncamientos y 7
+    hallazgos sin resolver son un resultado del benchmarking.
+
+    Se incorpora como componente, con dos razones declaradas: un fallo aislado
+    no puede llevarse por delante un lote ya pagado, y la proporción de fallos
+    por modelo es criterio de comparación entre proveedores.
+
+[AA] La reanudación no figuraba, y resultó decisiva.
+
+    Nació de una urgencia y terminó siendo la propiedad que permitió sobrevivir
+    a una suspensión del equipo de más de ocho horas, a un corte por agotamiento
+    del límite de la credencial y a una caída por respuesta fuera de contrato,
+    sin volver a pagar nada en ninguno de los tres casos.
+
+    Se eleva a objetivo de la arquitectura: tratar la interrupción como el caso
+    normal y no como la excepción.
+
+DIAGRAMAS
+
+Se corrigieron las fuentes, no las imágenes, porque las imágenes se generan
+desde ellas y corregir el documento sin tocarlas dejaría el texto diciendo una
+cosa y la figura otra.
+
+    workspace.dsl                         recuperador de contexto en los dos
+                                          sentidos; componentes de fiabilidad y
+                                          de presupuesto, con sus relaciones
+    diagramas/7_clases_dominio.puml        el contexto declara llamados y las
+                                          dos profundidades
+    modelo-datos/esquema.sql               columnas callees y callee_depth
+    modelo-datos/esquema_vertabelo.sql     igual, en la variante que aceptan los
+                                          importadores visuales
+    modelo-datos/esquema.dbml              igual, para dbdiagram
+
+Comprobado que los tres modelos de datos coinciden, columna por columna, con la
+tabla que declara el código.
+
+Las imágenes del documento hay que regenerarlas desde estas fuentes siguiendo
+arquitectura/LEEME.md: Structurizr para las vistas C4, PlantUML para los flujos
+y el diagrama de clases, y dbdiagram o Vertabelo para el entidad-relación.
+
+===============================================================================
+VERIFICACIÓN DE LOS CRITERIOS DE ACEPTACIÓN, OBJETIVO 3
+===============================================================================
+
+Se recorrieron las 44 historias y sus 116 criterios contra la suite de 211
+pruebas, el servicio desplegado y el código del cliente. El detalle está en
+VERIFICACION_CRITERIOS_OE3.txt. Recuento:
+
+    verificado con prueba o despliegue   31
+    implementado pero sin prueba         10
+    incompleto                            1     US025
+    exige recorrido manual                1     US033
+    parcial                               1     US022
+
+Cuatro cosas que resolver antes de pedir el acta:
+
+  US025, transformaciones adversariales, figura terminada y no lo está. La clase
+  de dominio, la tabla y el repositorio existen, pero nadie la invoca, ningún
+  recorrido la expone y ninguna prueba la ejerce. O se cablea, o se saca del
+  alcance y se declara.
+
+  El cliente web no tiene ninguna prueba: ni guion en package.json ni
+  dependencia declarada. Siete historias dependen de la interfaz. La más
+  delicada es US023, el modo sin asistente, porque es el instrumento del
+  experimento del objetivo cuarto: si esa pantalla mostrara el veredicto en la
+  condición sin asistencia, el experimento quedaría invalidado y nada lo
+  detectaría.
+
+  US016, el filtro determinista, es el único componente de la cadena de
+  validación sin prueba propia.
+
+  La medición de confianza ciega que el objetivo cuarto incorporó es
+  funcionalidad que todavía no existe, y la construye el tercero.
+
+===============================================================================
+RESOLUCIÓN DE LOS PENDIENTES DEL OBJETIVO 3
+===============================================================================
+
+[AB] El cliente web no tenía ninguna prueba, y la que faltaba era crítica.
+
+    Se incorporó el entorno (vitest sobre navegador simulado) y siete
+    comprobaciones sobre la condición sin asistente, que es el instrumento del
+    experimento del objetivo cuarto: si esa pantalla dejara ver el veredicto,
+    las dos condiciones dejarían de ser dos, los datos se recogerían igual, el
+    análisis correría igual y el resultado parecería válido.
+
+    Se comprobó que la prueba detecta el fallo: al quitar a propósito la guarda
+    que oculta el panel del juicio, falla nombrando el texto filtrado.
+
+    Quedaron enlazadas a la verificación automática del repositorio del cliente.
+
+[AC] US025 se declaró fuera de alcance en lugar de fingirla terminada.
+
+    El estudio de robustez adversarial que la motiva no pertenece a ninguno de
+    los cuatro objetivos. Exponer un recorrido que ningún protocolo usa habría
+    sido añadir superficie sin propósito.
+
+    Se probó la pieza de dominio, 20 comprobaciones sobre las tres
+    transformaciones y sobre el invariante que las hace válidas. El Product
+    Backlog recoge el estado real con su motivo.
+
+[AD] El filtro determinista pasó a tener prueba propia.
+
+    Diez comprobaciones sobre la asimetría que el módulo declara: resolver de
+    más produce falsos negativos silenciosos y escalar de más solo cuesta
+    dinero, de modo que ante la duda se escala. Incluye el saneador posterior al
+    sumidero y el de la misma línea, que son los dos casos en que confundir
+    presencia con efecto costaría una vulnerabilidad.
+
+[AE] La medición de confianza ciega quedó implementada.
+
+    No hace falta fabricar veredictos equivocados: son los que el modelo comete
+    de verdad. Se identifican los hallazgos en que el veredicto contradice la
+    verdad conocida y se registra qué proporción adoptó el participante en lugar
+    de rectificar.
+
+    Tres decisiones que quedan a la vista en el código: la abstención no es un
+    veredicto equivocado porque no afirma nada; la duda del participante no
+    cuenta como seguimiento porque quien duda no ha dado por bueno el veredicto;
+    y sin casos engañosos la tasa queda sin valor y no en cero, porque cero
+    afirmaría que nadie siguió al modelo cuando lo cierto es que no hubo ocasión.
+
+    Se expone en el recorrido de métricas junto a la matriz de confusión.
+
+ESTADO
+
+    servicio    306 pruebas, regla de dependencia sobre 27 módulos, estilo limpio
+    cliente       7 pruebas, tipos sin errores
+
